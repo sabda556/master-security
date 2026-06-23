@@ -10,7 +10,7 @@ The tool operates on a four-stage automated lifecycle when a network package is 
 1. **Sniffing & Detection:** Uses `scapy` to intercept TCP packets on specified high-risk ports.
 2. **Threshold Verification:** Tracks connection frequency. If an unwhitelisted IP hits the threshold, it triggers mitigation.
 3. **Automated Mitigation:** Dynamically injects a `DROP` rule into `iptables` to isolate the attacker instantly.
-4. **Forensic Scanning & Logging:** Launches an asynchronous `rustscan` to map the attacker's open ports and logs the raw telemetry into a localized SQLite3 database and JSON reports.
+4. **Forensic Scanning & Logging:** Launches an asynchronous `massscan` to map the attacker's open ports and logs the raw telemetry into a localized SQLite3 database and JSON reports.
 
 ---
 

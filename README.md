@@ -57,7 +57,7 @@ sudo systemctl start tor
 
 🚀 Usage
 Execute the master script with root privileges:
-sudo python3 main.py
+sudo python3 src/main.py
 
 Configuration Tuning
 You can modify the constants directly inside main.py to match your lab environment:

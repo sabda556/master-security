@@ -47,7 +47,7 @@ sudo apt install tor rustscan iptables -y
 
 🔧 Installation & Setup
 Clone the repository:
-git clone (https://github.com/sabda556/master-security.git)
+git clone https://github.com/sabda556/master-security.git
 cd master-security
 
 Install Python Dependencies:

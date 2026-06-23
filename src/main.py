@@ -113,10 +113,15 @@ def packet_callback(packet):
     if packet.haslayer(IP) and packet.haslayer(TCP):
         src, port = packet[IP].src, packet[TCP].dport
         if src not in WHITELIST_IPS and port in SUSPICIOUS_PORTS and src not in blocked_ips:
-            attack_tracker[src] = attack_tracker.get(src, {"count": 0, "first_seen": time.time()})
+            # FIX: Inisialisasi awal ditambahkan kunci 'type': 'PENDING'
+            if src not in attack_tracker:
+                attack_tracker[src] = {"count": 0, "first_seen": time.time(), "type": "PENDING"}
+                
             attack_tracker[src]["count"] += 1
+            
             if attack_tracker[src]["count"] >= THRESHOLD:
                 attacker_type = "BOT" if (time.time() - attack_tracker[src]["first_seen"]) < 3.0 else "HUMAN"
+                attack_tracker[src]["type"] = attacker_type  # FIX: Update tipe ke database tracker lokal
                 threading.Thread(target=mitigate_attacker, args=(src, port, attacker_type), daemon=True).start()
 
 # --- Main Interface ---
@@ -153,7 +158,9 @@ def main():
             for ip, data in attack_tracker.items():
                 action = ongoing_actions.get(ip, "MONITORING")
                 status = "BLOCKED" if ip in blocked_ips else action
-                print(f" {ip:<18} | {str(data['count'])+'x':<8} | {data['type']:<15} | {status:<15}")
+                # FIX: Menggunakan .get() sebagai perlindungan ekstra dari KeyError
+                attacker_type = data.get("type", "PENDING")
+                print(f" {ip:<18} | {str(data['count'])+'x':<8} | {attacker_type:<15} | {status:<15}")
 
             print("\n [LIVE FEED]")
             print("-" * 80)

@@ -15,7 +15,7 @@ from stem import Signal
 from stem.control import Controller
 
 # --- Configuration ---
-SUSPICIOUS_PORTS = [22, 23, 80, 443, 445, 3389, 4444]
+# SUSPICIOUS_PORTS dihapus, sekarang memantau SEMUA port.
 THRESHOLD = 3
 ROTATION_INTERVAL = 20
 REPORT_DIR = "SOC_Reports"
@@ -36,7 +36,7 @@ activity_log = deque(maxlen=8)
 current_tor_ip = "Initializing!"
 countdown = ROTATION_INTERVAL
 is_proxy_error = False
-error_start_time = 0  # Tracker waktu untuk repair manual
+error_start_time = 0  
 stop_event = threading.Event()
 
 # --- Signal Handler ---
@@ -71,7 +71,7 @@ def tor_rotator_thread():
             session.proxies = {'http': 'socks5h://127.0.0.1:9050', 'https': 'socks5h://127.0.0.1:9050'}
             current_tor_ip = session.get("https://httpbin.org/ip", timeout=5).json()['origin']
             is_proxy_error = False
-            error_start_time = 0  # Reset timer pas koneksi sukses kembali
+            error_start_time = 0  
             
             for i in range(ROTATION_INTERVAL, 0, -1):
                 if stop_event.is_set(): break
@@ -80,7 +80,7 @@ def tor_rotator_thread():
             attempt_tor_recovery()
         except:
             if error_start_time == 0:
-                error_start_time = time.time()  # Mulai hitung waktu pas pertama kali error
+                error_start_time = time.time()  
                 
             is_proxy_error = True
             current_tor_ip = "REPAIRING!"
@@ -101,7 +101,8 @@ def mitigate_attacker(ip, port, attacker_type):
     ongoing_actions[ip] = "Scanning"
     try:
         with open(f"{REPORT_DIR}/scan_{ip}.txt", "w") as f:
-            subprocess.run(["rustscan", "-a", ip, "--ulimit", "5000", "--timeout", "1500"], stdout=f, stderr=f)
+            # FIX: Menambahkan argumen -r 1-65535 untuk scan seluruh port attacker
+            subprocess.run(["rustscan", "-a", ip, "-r", "1-65535", "--ulimit", "5000", "--timeout", "1500"], stdout=f, stderr=f)
     except: pass
     with open(f"{REPORT_DIR}/report_{ip}.json", "w") as f:
         json.dump({"ip": ip, "type": attacker_type, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f)
@@ -110,19 +111,20 @@ def mitigate_attacker(ip, port, attacker_type):
     activity_log.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] Sucsesfully blocked {ip}")
 
 def packet_callback(packet):
+    # FIX: Memeriksa flag SYN (TCP flag 2) agar trafik koneksi normal tidak keblokir
     if packet.haslayer(IP) and packet.haslayer(TCP):
-        src, port = packet[IP].src, packet[TCP].dport
-        if src not in WHITELIST_IPS and port in SUSPICIOUS_PORTS and src not in blocked_ips:
-            # FIX: Inisialisasi awal ditambahkan kunci 'type': 'PENDING'
-            if src not in attack_tracker:
-                attack_tracker[src] = {"count": 0, "first_seen": time.time(), "type": "PENDING"}
+        if packet[TCP].flags == 2:  # Hanya paket yang memulai koneksi baru (SYN)
+            src, port = packet[IP].src, packet[TCP].dport
+            if src not in WHITELIST_IPS and src not in blocked_ips:
+                if src not in attack_tracker:
+                    attack_tracker[src] = {"count": 0, "first_seen": time.time(), "type": "PENDING"}
+                    
+                attack_tracker[src]["count"] += 1
                 
-            attack_tracker[src]["count"] += 1
-            
-            if attack_tracker[src]["count"] >= THRESHOLD:
-                attacker_type = "BOT" if (time.time() - attack_tracker[src]["first_seen"]) < 3.0 else "HUMAN"
-                attack_tracker[src]["type"] = attacker_type  # FIX: Update tipe ke database tracker lokal
-                threading.Thread(target=mitigate_attacker, args=(src, port, attacker_type), daemon=True).start()
+                if attack_tracker[src]["count"] >= THRESHOLD:
+                    attacker_type = "BOT" if (time.time() - attack_tracker[src]["first_seen"]) < 3.0 else "HUMAN"
+                    attack_tracker[src]["type"] = attacker_type
+                    threading.Thread(target=mitigate_attacker, args=(src, port, attacker_type), daemon=True).start()
 
 # --- Main Interface ---
 def main():
@@ -146,24 +148,24 @@ def main():
             status_text = f"FIXING{dots}" if is_proxy_error else f"ROTATING IP{dots}"
             print(f" [SYSTEM STATUS] TOR IP: {current_tor_ip} | {status_text:<20}")
             
-            # --- LOGIKA PENAMPILAN PESAN REPAIR MANUAL ---
             if is_proxy_error and error_start_time > 0 and (time.time() - error_start_time) > 15:
                 print(" [!] If this takes too long, try to fix it manually:")
                 print("     sudo killall tor && sudo systemctl restart tor@default")
             
             print(f"\n {'IP ADDRESS':<18} | {'FREQ':<8} | {'TYPE':<15} | {'STATUS':<15}")
             print("-" * 80)
-            print(f" Scanning all ports for suspicious activity{dots:<5}")
             
+            # FIX: Teks scanning dipindah ke bawah, data loop tetap di atas
             for ip, data in attack_tracker.items():
                 action = ongoing_actions.get(ip, "MONITORING")
                 status = "BLOCKED" if ip in blocked_ips else action
-                # FIX: Menggunakan .get() sebagai perlindungan ekstra dari KeyError
                 attacker_type = data.get("type", "PENDING")
                 print(f" {ip:<18} | {str(data['count'])+'x':<8} | {attacker_type:<15} | {status:<15}")
 
             print("\n [LIVE FEED]")
             print("-" * 80)
+            # Teks scanning yang baru diletakkan di bawah Live Feed
+            print(f" Scanning all ports for suspicious activity{dots:<5}")
             for ip_addr, status_act in list(ongoing_actions.items()):
                 print(f" [{datetime.now().strftime('%H:%M:%S')}] {status_act}{feed_dots} ({ip_addr})")
             for log in activity_log: print(f" {log}")
@@ -173,7 +175,6 @@ def main():
             
     finally:
         print("\n\n[!] Shutting down system gracefully...")
-        # Ambil IP asli saat sistem di-close
         try:
             real_ip = requests.get("https://api.ipify.org", timeout=3).text
         except:

@@ -15,7 +15,6 @@ from stem import Signal
 from stem.control import Controller
 
 # --- Configuration ---
-# SUSPICIOUS_PORTS dihapus, sekarang memantau SEMUA port.
 THRESHOLD = 3
 ROTATION_INTERVAL = 20
 REPORT_DIR = "SOC_Reports"
@@ -87,33 +86,63 @@ def tor_rotator_thread():
             attempt_tor_recovery()
             time.sleep(3)
 
-# --- Mitigation ---
+# --- Mitigation & Two-Tier Scanning ---
 def mitigate_attacker(ip, port, attacker_type):
     if ip in blocked_ips or ip in ongoing_actions: return
-    ongoing_actions[ip] = "Blocking"
-    time.sleep(2)
+    
+    # 1. Blocking Phase
+    ongoing_actions[ip] = "Blocking IP"
+    time.sleep(1)
     try:
         subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"], check=True)
         blocked_ips.add(ip)
         db_cursor.execute("INSERT OR IGNORE INTO blocked_threats VALUES (?, ?, ?)", (ip, attacker_type, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         db_conn.commit()
     except: pass
-    ongoing_actions[ip] = "Scanning"
+    
+    # 2. Tier 1: Fast Port Discovery (Masscan)
+    ongoing_actions[ip] = "Masscan (Fast)"
+    open_ports = []
     try:
-        with open(f"{REPORT_DIR}/scan_{ip}.txt", "w") as f:
-            # FIX: Menambahkan argumen -r 1-65535 untuk scan seluruh port attacker
-            subprocess.run(["rustscan", "-a", ip, "-r", "1-65535", "--ulimit", "5000", "--timeout", "1500"], stdout=f, stderr=f)
+        # Rate 10000 = sangat agresif. Wait 0 = tidak menunggu kelamaan.
+        mass_out = subprocess.run(["sudo", "masscan", ip, "-p1-65535", "--rate", "10000", "--wait", "0"], capture_output=True, text=True)
+        for line in mass_out.stdout.split('\n'):
+            if "Discovered open port" in line:
+                p = line.split()[3].split('/')[0]
+                open_ports.append(p)
     except: pass
+
+    # 3. Tier 2: Service Enumeration (Nmap)
+    if open_ports:
+        ongoing_actions[ip] = "Nmap (Forensic)"
+        ports_str = ",".join(open_ports)
+        try:
+            with open(f"{REPORT_DIR}/scan_{ip}.txt", "w") as f:
+                f.write(f"[+] TIER 1 - Masscan discovered open ports: {ports_str}\n")
+                f.write(f"[+] TIER 2 - Launching Nmap Service Scan...\n")
+                f.write("=" * 60 + "\n\n")
+                # -sV mendeteksi versi, -sC memakai script default Nmap
+                subprocess.run(["sudo", "nmap", "-sV", "-sC", "-p", ports_str, ip], stdout=f, stderr=f)
+        except: pass
+    else:
+        with open(f"{REPORT_DIR}/scan_{ip}.txt", "w") as f:
+            f.write("[-] Scan complete. No open ports discovered by Masscan.\n")
+
+    # Save JSON Report
     with open(f"{REPORT_DIR}/report_{ip}.json", "w") as f:
-        json.dump({"ip": ip, "type": attacker_type, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f)
+        json.dump({
+            "ip": ip, 
+            "type": attacker_type, 
+            "discovered_ports": open_ports,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }, f, indent=4)
     
     if ip in ongoing_actions: del ongoing_actions[ip]
-    activity_log.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] Sucsesfully blocked {ip}")
+    activity_log.appendleft(f"[{datetime.now().strftime('%H:%M:%S')}] Threat {ip} secured & scanned")
 
 def packet_callback(packet):
-    # FIX: Memeriksa flag SYN (TCP flag 2) agar trafik koneksi normal tidak keblokir
     if packet.haslayer(IP) and packet.haslayer(TCP):
-        if packet[TCP].flags == 2:  # Hanya paket yang memulai koneksi baru (SYN)
+        if packet[TCP].flags == 2:  # SYN filter
             src, port = packet[IP].src, packet[TCP].dport
             if src not in WHITELIST_IPS and src not in blocked_ips:
                 if src not in attack_tracker:
@@ -155,7 +184,6 @@ def main():
             print(f"\n {'IP ADDRESS':<18} | {'FREQ':<8} | {'TYPE':<15} | {'STATUS':<15}")
             print("-" * 80)
             
-            # FIX: Teks scanning dipindah ke bawah, data loop tetap di atas
             for ip, data in attack_tracker.items():
                 action = ongoing_actions.get(ip, "MONITORING")
                 status = "BLOCKED" if ip in blocked_ips else action
@@ -164,8 +192,7 @@ def main():
 
             print("\n [LIVE FEED]")
             print("-" * 80)
-            # Teks scanning yang baru diletakkan di bawah Live Feed
-            print(f" Scanning all ports for suspicious activity{dots:<5}")
+            print(f" Multi-tier scanning active (Masscan -> Nmap){dots:<5}")
             for ip_addr, status_act in list(ongoing_actions.items()):
                 print(f" [{datetime.now().strftime('%H:%M:%S')}] {status_act}{feed_dots} ({ip_addr})")
             for log in activity_log: print(f" {log}")
